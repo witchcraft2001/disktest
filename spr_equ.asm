@@ -1,0 +1,3 @@
+CMOS_DRD equ    0FFBDh
+CMOS_DWR equ    0BFBDh
+CMOS_AWR equ    0DFBDh
