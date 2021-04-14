@@ -15,6 +15,7 @@ EXEhead:	db	"EXE"
 		dw	EntryExec
 		dw	0x80FF
 EntryExec:	di
+                push    ix
 		ld	a,(ix-0x03)		; file handle
                 ld      c,Dss.Close             ; close file
 		rst     0x10
@@ -26,18 +27,35 @@ EntryExec:	di
 		LD	A, D
 		OR	A
 		JR	NZ, .next1
+                pop     hl
 		LD	HL, IncorDosStr
 		LD	C, Dss.PChars		; print text
 		RST	0x10
 		JP      Exit
-.next1          ld      c,Dss.CurDisk
+.next1:         ld      c,Dss.CurDisk
                 rst     0x10
                 jp      c,DiskError
-                add      a,"A"
+                pop     hl
+                ld      (WorkDriveNumber),a
+                add     a,"A"
                 ld      (DiskInfo.letter),a
+                call    ParseArguments
+                jp      c,Exit
                 ld      hl,DiskInfo
                 ld      c,Dss.PChars
                 rst     0x10
+                ld      a,(WorkDriveNumber)
+                ld      c,Dss.ChDisk
+                rst     0x10
+                jp      c,DiskError
+                ld      a,"\\"
+                ld      (DiskInfo.letter+2),a
+                xor     a
+                ld      (DiskInfo.letter+3),a
+                ld      hl,DiskInfo.letter
+                ld      c,Dss.ChDir
+                rst     0x10
+                jp      c,DiskError
                 call    DeleteTestFile
                 call    CreateFile
                 jp      c,SomeErrors
@@ -404,13 +422,75 @@ CMOSWait:       di
                 ld      e,a            ;4, а вот от сюда и начинается отсчёт тактов
                 ret
 
+;Parse Arguments in Command line
+ParseArguments:
+                ld      a,(hl)
+                or      a
+                ret     z
+                inc     hl
+                inc     hl
+                ld      bc,0x2f20
+                ld      e,"-"
+.loop:          ld      a,(hl)
+                inc     hl
+                and     a
+                ret     z
+                cp      c
+                jr      z,.loop
+                cp      b
+                jr      z,.argument
+                cp      e
+                jr      z,.argument
+                res     5,a
+                cp      "A"
+                jr      c,.skip
+                cp      "Z" + 1
+                jr      nc,.skip
+                ld      d,a
+                ld      a,(hl)
+                inc     hl
+                cp      ":"
+                jr      nz,.skip
+                ld      a,d
+                ld      (DiskInfo.letter),a
+                sub     "A"
+                ld      (WorkDriveNumber),a
+                jr      .loop
+.argument:      ld      a,(hl)
+                inc     hl
+                cp      "?"
+                jr      z,.help
+                res     5,a
+                cp      "H"
+                jr      z,.help
+.skip:          ld      a,(hl)
+                cp      c
+                jr      z,.loop
+                and     a
+                ret     z
+                inc     hl
+                jr      .skip
+.help:          ld      hl,HelpStr
+                ld      c,Dss.PChars
+                rst     0x10
+                scf
+                ret
+HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
+                db      "With no command line parameters, the utility will perform a file-system based", 0x0D, 0x0A
+                db      "performance test with a test file size of 2MB on disk from which utility was", 0x0D, 0x0A
+                db      "started.", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "Usage:\tX: - specify test disk letter", 0x0D, 0x0A
+                db      "\t/H, /? - help page", 0x0D, 0x0A
+                db      "\t/S - specify the test file size (2M, 4M, 8M). Default size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "Example: DISKTEST.EXE C: /S 4M", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
+
 CopyrightStr:	db	0x0D, 0x0A
 		db	"DiskTest, ver 0.4a (Alpha)", 0x0D, 0x0A
 		db	"(C) 2021, Mikhaltchenkov Dmitry aka Hard/WCG, Rostov-on-Don.", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 IncorDosStr:	db	"Incorrect DOS version, need DOS 1.00 or high.", 0x0D, 0x0A, 0x00
 CreateFileStr:  db      "Creating test file 2Mb ...        ", 0x00
 DiskInfo:       db      "Testing disk: "
-.letter:        db      "A:"
+.letter:        db      "A:", 0x0D, 0x0A, 0x00
 EnterStr:       db      0x0D, 0x0A, 0x00
 ElapsedTimeStr: db      "Elapsed: ", 0x00
 CancelStr:      db      "Canceled", 0x0D, 0x0A, 0x00
@@ -435,7 +515,8 @@ DiskErrorStr:   db      "PANIC: Disk error!", 0x0D, 0x0A, 0x00
 TestFileName:   db      "DISKTEST.$$$",0
 FileBlocks:     equ     0x1000                  ;file lenght in 512 bytes blocks
 FileHandler:    db      0                       ;file handler
-
+WorkDriveNumber:
+                db      0xFF
                 ;Division routines
                 include "muldiv.asm"
                 include "prnum.asm"                
