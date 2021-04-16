@@ -59,6 +59,9 @@ EntryExec:	di
                 ld      hl,FileSizeStr
                 ld      c,Dss.PChars
                 rst     0x10
+                ld      hl,EnterStr
+                ld      c,Dss.PChars
+                rst     0x10
                 call    DeleteTestFile
                 call    CreateFile
                 jp      c,SomeErrors
@@ -533,25 +536,30 @@ ParseArguments:
                 call    CheckParam
                 ld      hl,0x8000
                 jr      c,.notfound
-.found:         ld      (FileBlocks),hl
+.found:         ld      (FileBlocks),hl                
                 pop     hl
                 ld      de,FileSizeStr.size
                 ld      bc,4
                 ldir
+                pop     hl
                 pop     bc
                 pop     de
-                jp      .loop
+                jp      .skip
 .notfound       pop     hl
                 push    de
                 ld      hl,UnknownSizeStr
                 ld      c,Dss.PChars
                 rst     0x10
                 pop     hl
+                pop     de                
                 pop     bc
                 pop     de
                 jp      .skip
 CheckParam:     ld      b,0x20
-.loop:          ld      a,(de)
+.loop:          ld      a,(hl)
+                or      a
+                ret     z
+                ld      a,(de)
                 cp      b
                 jr      z,.end
                 and     a
@@ -565,9 +573,6 @@ CheckParam:     ld      b,0x20
                 jr      nz,.end
 .next:          inc     hl
                 inc     de
-                ld      a,(hl)
-                or      a
-                ret     z
                 jr      .loop
 .end:           scf
                 ret        
@@ -581,7 +586,7 @@ HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
                 db      "                Default test file size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
                 db      "Example: DISKTEST.EXE C: /S 4M", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 FileSizeStr:    db      "Test file size: "
-.size:          db      "512K", 0x0D, 0x0A, 0x00
+.size:          db      "512K", 0x00
 S512KStr:       db      "512K", 0x00
 S1MStr:         db      "1M", 0x00,0x00
 S2MStr:         db      "2M", 0x00,0x00
