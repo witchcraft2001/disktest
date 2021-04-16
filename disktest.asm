@@ -56,6 +56,9 @@ EntryExec:	di
                 ld      c,Dss.ChDir
                 rst     0x10
                 jp      c,DiskError
+                ld      hl,FileSizeStr
+                ld      c,Dss.PChars
+                rst     0x10
                 call    DeleteTestFile
                 call    CreateFile
                 jp      c,SomeErrors
@@ -145,7 +148,8 @@ TestConsistentRead:
                 ld      c,b
                 ld      b,l
                 push    bc
-                ld      de,FileBlocks
+                ld      hl,(FileBlocks)
+                ex      hl,de
                 and     a
                 rr      d
                 rr      e
@@ -191,7 +195,16 @@ CreateFile:     ld      hl,Buffer
                 rst     0x10
                 ret     c
                 ld      (FileHandler),a
-                ld      bc,FileBlocks / 8
+                ld      hl,(FileBlocks)
+                and     a
+                rr      h
+                rr      l
+                rr      h
+                rr      l
+                rr      h
+                rr      l
+                ld      b,h
+                ld      c,l
                 ld      hl,Buffer
                 ld      de,0x1000
 .loop:          push    hl
@@ -230,7 +243,8 @@ CreateFile:     ld      hl,Buffer
                 ld      c,b
                 ld      b,l
                 push    bc
-                ld      de,FileBlocks
+                ld      hl,(FileBlocks)
+                ex      hl,de
                 and     a
                 rr      d
                 rr      e
@@ -463,6 +477,8 @@ ParseArguments:
                 res     5,a
                 cp      "H"
                 jr      z,.help
+                cp      "S"
+                jr      z,.size
 .skip:          ld      a,(hl)
                 cp      c
                 jr      z,.loop
@@ -475,17 +491,106 @@ ParseArguments:
                 rst     0x10
                 scf
                 ret
+.size:          inc     hl
+                push    de
+                push    bc
+                ex      hl,de
+                push    de
+                ld      hl,S512KStr
+                push    hl
+                call    CheckParam
+                ld      hl,0x0400
+                jr      nc,.found
+                pop     de
+                pop     de
+                push    de
+                ld      hl,S1MStr
+                push    hl
+                call    CheckParam
+                ld      hl,0x0800
+                jr      nc,.found
+                pop     de
+                pop     de
+                push    de
+                ld      hl,S2MStr
+                push    hl
+                call    CheckParam
+                ld      hl,0x1000
+                jr      nc,.found
+                pop     de
+                pop     de
+                push    de
+                ld      hl,S4MStr
+                push    hl
+                call    CheckParam
+                ld      hl,0x4000
+                jr      nc,.found
+                pop     de
+                pop     de
+                push    de
+                ld      hl,S8MStr
+                push    hl
+                call    CheckParam
+                ld      hl,0x8000
+                jr      c,.notfound
+.found:         ld      (FileBlocks),hl
+                pop     hl
+                ld      de,FileSizeStr.size
+                ld      bc,4
+                ldir
+                pop     bc
+                pop     de
+                jp      .loop
+.notfound       pop     hl
+                push    de
+                ld      hl,UnknownSizeStr
+                ld      c,Dss.PChars
+                rst     0x10
+                pop     hl
+                pop     bc
+                pop     de
+                jp      .skip
+CheckParam:     ld      b,0x20
+.loop:          ld      a,(de)
+                cp      b
+                jr      z,.end
+                and     a
+                jr      z,.end
+                cp      (hl)
+                jr      z,.next
+                cp      "A"
+                jr      c,.end
+                res     5,a
+                cp      (hl)
+                jr      nz,.end
+.next:          inc     hl
+                inc     de
+                ld      a,(hl)
+                or      a
+                ret     z
+                jr      .loop
+.end:           scf
+                ret        
 HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
                 db      "With no command line parameters, the utility will perform a file-system based", 0x0D, 0x0A
                 db      "performance test with a test file size of 2MB on disk from which utility was", 0x0D, 0x0A
                 db      "started.", 0x0D, 0x0A, 0x0D, 0x0A
-                db      "Usage:\tX: - specify test disk letter", 0x0D, 0x0A
-                db      "\t/H, /? - help page", 0x0D, 0x0A
-                db      "\t/S - specify the test file size (2M, 4M, 8M). Default size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "Usage: X:       specify test disk letter", 0x0D, 0x0A
+                db      "       /H, /?   help page", 0x0D, 0x0A
+                db      "       /S       specify the test file size (512K, 1M, 2M, 4M, 8M).", 0x0D, 0x0A
+                db      "                Default test file size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
                 db      "Example: DISKTEST.EXE C: /S 4M", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
-
+FileSizeStr:    db      "Test file size: "
+.size:          db      "512K", 0x0D, 0x0A, 0x00
+S512KStr:       db      "512K", 0x00
+S1MStr:         db      "1M", 0x00,0x00
+S2MStr:         db      "2M", 0x00,0x00
+S4MStr:         db      "4M", 0x00,0x00
+S8MStr:         db      "8M", 0x00,0x00
+UnknownSizeStr: db      "The value of the size parameter is not correct, please read the help (start app", 0x0D, 0x0A
+                db      "with /? argument).", 0x0D, 0x0A, 0x00
 CopyrightStr:	db	0x0D, 0x0A
-		db	"DiskTest, ver 0.4a (Alpha)", 0x0D, 0x0A
+		db	"DiskTest, ver 0.5 (Alpha)", 0x0D, 0x0A
 		db	"(C) 2021, Mikhaltchenkov Dmitry aka Hard/WCG, Rostov-on-Don.", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 IncorDosStr:	db	"Incorrect DOS version, need DOS 1.00 or high.", 0x0D, 0x0A, 0x00
 CreateFileStr:  db      "Creating test file 2Mb ...        ", 0x00
@@ -513,7 +618,7 @@ ConsistentReadStr:
 .size:          db      "512B ... ", 0x00
 DiskErrorStr:   db      "PANIC: Disk error!", 0x0D, 0x0A, 0x00
 TestFileName:   db      "DISKTEST.$$$",0
-FileBlocks:     equ     0x1000                  ;file lenght in 512 bytes blocks
+FileBlocks:     dw      0x1000                  ;file lenght in 512 bytes blocks
 FileHandler:    db      0                       ;file handler
 WorkDriveNumber:
                 db      0xFF
