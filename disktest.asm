@@ -108,7 +108,7 @@ TestConsistentRead:
                 ld      bc,Dss.Move_FP
                 ld      a,(FileHandler)
                 rst     0x10
-                ret     c
+                jr      c,.exit
                 ld      hl,Buffer
                 ld      de,0x0800
 .buferSize:     equ     $-2
@@ -196,7 +196,7 @@ CreateFile:     ld      hl,Buffer
                 ld      c,Dss.Creat_N
                 xor     a
                 rst     0x10
-                ret     c
+                jr      c,.error1
                 ld      (FileHandler),a
                 ld      hl,(FileBlocks)
                 and     a
@@ -272,7 +272,7 @@ CreateFile:     ld      hl,Buffer
 .exit:          pop     de
                 pop     bc
                 pop     hl
-                pop     bc
+.error1:        pop     bc
                 pop     hl
                 scf
                 ret
@@ -526,7 +526,7 @@ ParseArguments:
                 ld      hl,S4MStr
                 push    hl
                 call    CheckParam
-                ld      hl,0x4000
+                ld      hl,0x2000
                 jr      nc,.found
                 pop     de
                 pop     de
@@ -534,7 +534,7 @@ ParseArguments:
                 ld      hl,S8MStr
                 push    hl
                 call    CheckParam
-                ld      hl,0x8000
+                ld      hl,0x4000
                 jr      c,.notfound
 .found:         ld      (FileBlocks),hl                
                 pop     hl
@@ -586,7 +586,7 @@ HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
                 db      "                Default test file size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
                 db      "Example: DISKTEST.EXE C: /S 4M", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 FileSizeStr:    db      "Test file size: "
-.size:          db      "512K", 0x00
+.size:          db      "2M  ", 0x00
 S512KStr:       db      "512K", 0x00
 S1MStr:         db      "1M", 0x00,0x00
 S2MStr:         db      "2M", 0x00,0x00
@@ -595,10 +595,10 @@ S8MStr:         db      "8M", 0x00,0x00
 UnknownSizeStr: db      "The value of the size parameter is not correct, please read the help (start app", 0x0D, 0x0A
                 db      "with /? argument).", 0x0D, 0x0A, 0x00
 CopyrightStr:	db	0x0D, 0x0A
-		db	"DiskTest, ver 0.5 (Alpha)", 0x0D, 0x0A
+		db	"DiskTest, ver 0.6 (Alpha)", 0x0D, 0x0A
 		db	"(C) 2021, Mikhaltchenkov Dmitry aka Hard/WCG, Rostov-on-Don.", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 IncorDosStr:	db	"Incorrect DOS version, need DOS 1.00 or high.", 0x0D, 0x0A, 0x00
-CreateFileStr:  db      "Creating test file 2Mb ...        ", 0x00
+CreateFileStr:  db      "Creating test file ...            ", 0x00
 DiskInfo:       db      "Testing disk: "
 .letter:        db      "A:", 0x0D, 0x0A, 0x00
 EnterStr:       db      0x0D, 0x0A, 0x00
