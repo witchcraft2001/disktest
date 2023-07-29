@@ -1,2 +1,9 @@
 /build
 /*.lst
+/RUN
+/.vscode
+/Hidden
+/make.bat
+/make_image.bat
+/*.exe
+/make_image
