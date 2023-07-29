@@ -146,7 +146,7 @@ TestConsistentRead:
                 pop     bc
                 pop     hl
                 xor     a
-                or      h               ;–°–ª–∏—à–∫–æ–º –±–æ–ª—å—à–æ–µ –≤—Ä–µ–º—è
+                or      h               ;ë´®Ë™Æ¨ °Æ´ÏËÆ• ¢‡•¨Ô
                 jr      nz,.tobig
                 ld      c,b
                 ld      b,l
@@ -158,7 +158,7 @@ TestConsistentRead:
                 rr      e
                 ld      hl,0
                 pop     bc
-                call    div32           ;–≤ DE - —á–∞—Å—Ç–Ω–æ–µ - KB/s
+                call    div32           ;¢ DE - Á†·‚≠Æ• - KB/s
                 push    de
                 pop     hl
                 ld      bc,SpeedNumStr
@@ -241,7 +241,7 @@ CreateFile:     ld      hl,Buffer
                 pop     bc
                 pop     hl
                 xor     a
-                or      h               ;–°–ª–∏—à–∫–æ–º –±–æ–ª—å—à–æ–µ –≤—Ä–µ–º—è
+                or      h               ;ë´®Ë™Æ¨ °Æ´ÏËÆ• ¢‡•¨Ô
                 jr      nz,.tobig
                 ld      c,b
                 ld      b,l
@@ -253,7 +253,7 @@ CreateFile:     ld      hl,Buffer
                 rr      e
                 ld      hl,0
                 pop     bc
-                call    div32           ;–≤ DE - —á–∞—Å—Ç–Ω–æ–µ - –ë/–°
+                call    div32           ;¢ DE - Á†·‚≠Æ• - Å/ë
                 push    de
                 pop     hl
                 ld      bc,SpeedNumStr
@@ -294,7 +294,8 @@ Exit:           ld      a,(FileHandler)
                 ld      c,Dss.Close
                 rst     0x10
 .next:          call    DeleteTestFile
-                LD	BC, 0xFF00 + Dss.Exit
+                ;LD	BC, 0xFF00 + Dss.Exit
+                LD	BC, Dss.Exit		;[x] 30/07/23 -bug with error number 
 		RST	0x10			; exit
 
 GetCurrentTime:
@@ -421,22 +422,22 @@ TimeInSeconds:  push    bc
 .next4:         ex      hl,de
                 ret
 
-;–û–∂–∏–¥–∞–Ω–∏–µ –¥–æ –Ω–∞—á–∞–ª–∞ —Å–µ–∫—É–Ω–¥—ã
+;é¶®§†≠®• §Æ ≠†Á†´† ·•™„≠§Î
 CMOSWait:       di
-                ld      bc,CMOS_AWR        ;–¥–∞–ª–µ–µ –Ω–µ –ø–æ—Ä—Ç–∏—Ç—Å—è
+                ld      bc,CMOS_AWR        ;§†´•• ≠• ØÆ‡‚®‚·Ô
                 ld      a,0
                 out     (c),a
                 ld      a,0FFh
                 in      a,(0xBD)
                 ld      e,a
-.loop0:         ld      bc,CMOS_AWR        ;–¥–∞–ª–µ–µ –Ω–µ –ø–æ—Ä—Ç–∏—Ç—Å—è
+.loop0:         ld      bc,CMOS_AWR        ;§†´•• ≠• ØÆ‡‚®‚·Ô
                 ld      a,0
                 out     (c),A
                 ld      a,0xff
-                in      a,(0xBD)        ;–æ—Ç—Ñ–∏–ª—å—Ç—Ä—É–µ–º —Ç–∏–∫ (–Ω–∞ —Ç–æ—Ç —Å–ª—É—á–∞–π –µ—Å–ª–∏ –ø–æ–ø–∞–ª–∏ –≤ –µ–≥–æ –∫–æ–Ω–µ—Ü)
+                in      a,(0xBD)        ;Æ‚‰®´Ï‚‡„•¨ ‚®™ (≠† ‚Æ‚ ·´„Á†© •·´® ØÆØ†´® ¢ •£Æ ™Æ≠•Ê)
                 cp      e            ;
                 jr      z,.loop0        ;
-                ld      e,a            ;4, –∞ –≤–æ—Ç –æ—Ç —Å—é–¥–∞ –∏ –Ω–∞—á–∏–Ω–∞–µ—Ç—Å—è –æ—Ç—Å—á—ë—Ç —Ç–∞–∫—Ç–æ–≤
+                ld      e,a            ;4, † ¢Æ‚ Æ‚ ·Ó§† ® ≠†Á®≠†•‚·Ô Æ‚·ÁÒ‚ ‚†™‚Æ¢
                 ret
 
 ;Parse Arguments in Command line
@@ -632,5 +633,4 @@ WorkDriveNumber:
                 include "prnum.asm"                
 
 Buffer:         equ     $
-EXEend:
-                savebin	"DISKTEST.EXE",EXEhead,EXEend-EXEhead
+EXEend:	ifndef _VSCODE_	savebin	"DISKTEST.EXE",EXEhead,EXEend-EXEhead : endif
