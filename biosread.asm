@@ -74,6 +74,8 @@ TestBiosRead:   push    de
                 ld      (Remaining),hl
                 xor     a
                 ld      (KeyCount),a
+                inc     a
+                ld      (SumPending),a
                 call    TimerStart
 .loop:          ld      hl,(Remaining)
                 ld      a,h
@@ -105,6 +107,7 @@ TestBiosRead:   push    de
                 pop     iy
                 jr      c,.bioserr
                 pop     bc
+                call    TakeResultSum           ; first command only
                 ld      hl,(CurLBA)             ; next sector, computed here so it does
                 ld      e,b                     ; not depend on the BIOS exit path
                 ld      d,0
@@ -156,7 +159,7 @@ PutHex2:        push    af
 BiosReadStr:    db      "Test: BIOS read, block "
 .size:          db      "512B ... ", 0x00
 BiosUnsupportedStr:
-                db      "BIOS sector read test: IDE drives only, skipped.", 0x0D, 0x0A, 0x00
+                db      "BIOS/ATA sector read tests: IDE drives only, skipped.", 0x0D, 0x0A, 0x00
 BiosErrorStr:   db      "BIOS error #"
 .code:          db      "00", 0x0D, 0x0A, 0x00
 

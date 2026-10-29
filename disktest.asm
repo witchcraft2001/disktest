@@ -7,6 +7,7 @@
 Buffer:         equ     0xC000                  ;16 KiB page allocated with GetMem, mapped to window 3
 TEST_FILE       equ     1
 TEST_BIOS       equ     2
+TEST_ATA        equ     4
 
 EXEhead:	db	"EXE"
 		db	0			; +3
@@ -104,10 +105,13 @@ EntryExec:	di
                 call    TestConsistentRead
                 jp      c,SomeErrors
 .biosTests:     ld      a,(TestMask)
-                bit     1,a
+                and     TEST_BIOS | TEST_ATA
                 jp      z,Exit
-                call    BiosTestPrepare
+                call    BiosTestPrepare         ; device + partition start for both
                 jp      c,Exit
+                ld      a,(TestMask)
+                bit     1,a
+                jr      z,.ataTests
                 ld      hl,TestSize512BStr
                 ld      e,1
                 call    TestBiosRead
@@ -127,6 +131,11 @@ EntryExec:	di
                 ld      hl,TestSize16KBStr
                 ld      e,32
                 call    TestBiosRead
+                jp      c,SomeErrors
+.ataTests:      ld      a,(TestMask)
+                bit     2,a
+                jp      z,Exit
+                call    AtaTests
                 jp      c,SomeErrors
                 jp      Exit
 ;[]-------------------------------------------------------------------------[]
@@ -362,13 +371,60 @@ PrintResult:    push    hl
                 rst     0x10
                 ld      a,(RtcUsed)
                 and     a
-                jr      z,.eol
+                jr      z,.suffix
                 ld      hl,RtcUsedStr
                 ld      c,Dss.PChars
                 rst     0x10
+.suffix:        ld      hl,(ResultSuffix)       ; e.g. the data checksum
+                ld      a,h
+                or      l
+                jr      z,.eol
+                ld      c,Dss.PChars
+                rst     0x10
+                ld      hl,0
+                ld      (ResultSuffix),hl
 .eol:           ld      hl,EnterStr
                 ld      c,Dss.PChars
                 rst     0x10
+                ret
+
+;Once per test (SumPending = 1): Fletcher-16 (mod 256) of the 512 bytes at
+;Buffer into SumStr, attached to the next PrintResult line. The BIOS and ATA
+;tests all start at the same sector, so every line must show the same value.
+;Unlike a plain byte sum it changes when bytes are swapped or shifted - what
+;a data-port latch slip looks like. BC preserved
+TakeResultSum:  ld      a,(SumPending)
+                and     a
+                ret     z
+                xor     a
+                ld      (SumPending),a
+                push    bc
+                ld      hl,Buffer
+                ld      de,0                    ; E = sum, D = sum of sums
+                ld      b,0                     ; 256 * 2 bytes
+.loop:          ld      a,(hl)
+                add     a,e
+                ld      e,a
+                add     a,d
+                ld      d,a
+                inc     hl
+                ld      a,(hl)
+                add     a,e
+                ld      e,a
+                add     a,d
+                ld      d,a
+                inc     hl
+                djnz    .loop
+                push    de
+                ld      a,d
+                ld      de,SumStr.hex
+                call    PutHex2
+                pop     hl
+                ld      a,l
+                call    PutHex2
+                ld      hl,SumStr
+                ld      (ResultSuffix),hl
+                pop     bc
                 ret
 
 ;Poll the keyboard once per 32 KiB transferred; A = bytes just transferred / 256.
@@ -449,6 +505,8 @@ ParseArguments:
                 jr      z,.fileonly
                 cp      "B"
                 jr      z,.biosonly
+                cp      "A"
+                jr      z,.ataonly
 .skip:          ld      a,(hl)
                 cp      c
                 jr      z,.loop
@@ -460,6 +518,9 @@ ParseArguments:
                 ld      (TestMask),a
                 jr      .skip
 .biosonly:      ld      a,TEST_BIOS
+                ld      (TestMask),a
+                jr      .skip
+.ataonly:       ld      a,TEST_ATA
                 ld      (TestMask),a
                 jr      .skip
 .help:          ld      hl,HelpStr
@@ -558,7 +619,8 @@ HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
                 db      "       /S       specify the test file size (512K, 1M, 2M, 4M, 8M).", 0x0D, 0x0A
                 db      "                Default test file size is 2M", 0x0D, 0x0A
                 db      "       /F       file system test only", 0x0D, 0x0A
-                db      "       /B       BIOS sector read test only (IDE drives)", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "       /B       BIOS sector read test only (IDE drives)", 0x0D, 0x0A
+                db      "       /A       direct ATA port test only: READ SECTORS vs READ MULTIPLE", 0x0D, 0x0A, 0x0D, 0x0A
                 db      "Example: DISKTEST.EXE C: /S 4M /B", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 FileSizeStr:    db      "Test file size: "
 .size:          db      "2M  ", 0x00
@@ -585,6 +647,8 @@ CancelStr:      db      "Canceled", 0x0D, 0x0A, 0x00
 SpeedStr:       db      "Speed: "
 SpeedNumStr:    db      "00000 KiB/s", 0x00
 RtcUsedStr:     db      " (RTC)", 0x00
+SumStr:         db      " ["
+.hex:           db      "0000]", 0x00
 
 TestSize512BStr:
                 db      "512B"
@@ -605,16 +669,19 @@ FileBlocks:     dw      0x1000                  ;file lenght in 512 bytes blocks
 FileHandler:    db      0                       ;file handler
 WorkDriveNumber:
                 db      0xFF
-TestMask:       db      TEST_FILE | TEST_BIOS   ;/F, /B
+TestMask:       db      TEST_FILE | TEST_BIOS | TEST_ATA        ;/F, /B, /A
 KeyCount:       db      0                       ;PollKey: bytes/256 since the last poll
 Elapsed:        dw      0, 0                    ;PrintResult scratch
 RtcSecs:        dw      0
 RtcUsed:        db      0                       ;1: result timed by the RTC (ticks were lost)
+ResultSuffix:   dw      0                       ;string printed after the speed, 0 = none
+SumPending:     db      0                       ;1: TakeResultSum still to run in this test
                 ;Division routines
                 include "muldiv.asm"
                 include "prnum.asm"
                 include "timer.asm"
                 include "biosread.asm"
+                include "atatest.asm"
 
 EXEend:
                 ASSERT  EXEend <= IM2_DEFAULT   ; code must stay below the IM2 jump/table/stack
