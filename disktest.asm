@@ -2,8 +2,12 @@
                 org	0x80EA
                 include "dss_equ.asm"
                 include "spr_equ.asm"
-                
-                
+                include "bios_equ.asm"
+
+Buffer:         equ     0xC000                  ;16 KiB page allocated with GetMem, mapped to window 3
+TEST_FILE       equ     1
+TEST_BIOS       equ     2
+
 EXEhead:	db	"EXE"
 		db	0			; +3
 		dw	EntryExec-EXEhead
@@ -13,7 +17,7 @@ EXEhead:	db	"EXE"
 		dw	0			; +14
 		dw	EntryExec		; +16
 		dw	EntryExec
-		dw	0x80FF
+		dw	0xBFFF			; stack: top of window 2, above the IM2 table
 EntryExec:	di
                 push    ix
 		ld	a,(ix-0x03)		; file handle
@@ -56,12 +60,26 @@ EntryExec:	di
                 ld      c,Dss.ChDir
                 rst     0x10
                 jp      c,DiskError
+                ; 16 KiB I/O buffer: own page in window 3 (the EXE gets window 2 only)
+                ld      b,1
+                ld      c,Dss.GetMem
+                rst     0x10
+                jp      c,MemError
+                ld      b,0
+                ld      c,Dss.SetWin3
+                rst     0x10
+                jp      c,MemError
+                call    TimerInit
+                call    TimerCalibrate
                 ld      hl,FileSizeStr
                 ld      c,Dss.PChars
                 rst     0x10
                 ld      hl,EnterStr
                 ld      c,Dss.PChars
                 rst     0x10
+                ld      a,(TestMask)
+                bit     0,a
+                jr      z,.biosTests
                 call    DeleteTestFile
                 call    CreateFile
                 jp      c,SomeErrors
@@ -85,8 +103,35 @@ EntryExec:	di
                 ld      de,0x4000
                 call    TestConsistentRead
                 jp      c,SomeErrors
+.biosTests:     ld      a,(TestMask)
+                bit     1,a
+                jp      z,Exit
+                call    BiosTestPrepare
+                jp      c,Exit
+                ld      hl,TestSize512BStr
+                ld      e,1
+                call    TestBiosRead
+                jp      c,SomeErrors
+                ld      hl,TestSize2KBStr
+                ld      e,4
+                call    TestBiosRead
+                jp      c,SomeErrors
+                ld      hl,TestSize4KBStr
+                ld      e,8
+                call    TestBiosRead
+                jp      c,SomeErrors
+                ld      hl,TestSize8KBStr
+                ld      e,16
+                call    TestBiosRead
+                jp      c,SomeErrors
+                ld      hl,TestSize16KBStr
+                ld      e,32
+                call    TestBiosRead
+                jp      c,SomeErrors
                 jp      Exit
 ;[]-------------------------------------------------------------------------[]
+;HL = block size label (4 chars), DE = block size in bytes
+;CF = 1: A = 0 canceled, A = 1 disk error
 TestConsistentRead:
                 push    de
                 ld      de,ConsistentReadStr.size
@@ -97,98 +142,49 @@ TestConsistentRead:
                 rst     0x10
                 pop     hl
                 ld      (.buferSize),hl
-                call    CMOSWait
-                ; call    PrintCurrentTime
-                call    GetCurrentTime
-                push    hl
-                push    bc
+                ld      a,h
+                ld      (.step),a               ; block size / 256 for PollKey
+                xor     a
+                ld      (KeyCount),a
+                ld      ix,0
                 ld      hl,0
-                push    hl
-                pop     ix
                 ld      bc,Dss.Move_FP
                 ld      a,(FileHandler)
                 rst     0x10
-                jr      c,.exit
-                ld      hl,Buffer
+                jr      c,.error
+                call    TimerStart
+.loop:          ld      hl,Buffer
                 ld      de,0x0800
 .buferSize:     equ     $-2
-.loop:
-                push    de
-                push    hl
                 ld      a,(FileHandler)
                 ld      c,Dss.Read
                 rst     0x10
-                push    de
-                ex      af,af'
-                ld      c,Dss.ScanKey
-                rst     0x10
-                pop     bc
-                pop     hl
-                pop     de
-                ; pop     bc
-                jr      nz,.break
-                ex      af,af'
                 jr      c,.error
-                ld      a,b
-                or      c
-                jr      nz,.loop
-.endfile:       ld      hl,ElapsedTimeStr
-                ld      c,Dss.PChars
-                rst     0x10
-                call    GetCurrentTime                
-                pop     af
-                pop     de
-                ld      c,a
-                call    TimeMinus
-                push    hl
-                push    bc
-                call    PrintTime
-                pop     bc
-                pop     hl
-                xor     a
-                or      h               ;Слишком большое время
-                jr      nz,.tobig
-                ld      c,b
-                ld      b,l
-                push    bc
-                ld      hl,(FileBlocks)
-                ex      hl,de
-                and     a
-                rr      d
-                rr      e
-                ld      hl,0
-                pop     bc
-                call    div32           ;в DE - частное - KB/s
-                push    de
-                pop     hl
-                ld      bc,SpeedNumStr
-                call    PRNUM0
-                ld      hl,SpeedStr
-                ld      c,Dss.PChars
-                rst     0x10
-.tobig:         ld      hl,EnterStr
-                ld      c,Dss.PChars
-                rst     0x10
+                ld      a,d                     ; DE = bytes read, 0 = end of file
+                or      e
+                jr      z,.endfile
+                ld      a,0
+.step:          equ     $-1
+                call    PollKey
+                jr      nz,.break
+                jr      .loop
+.endfile:       ld      hl,(FileBlocks)
+                call    PrintResult
                 and     a
                 ret
 .break:         xor     a
-                jr      .exit
+                scf
+                ret
 .error:         ld      a,1
-.exit:          pop     bc
-                pop     hl
                 scf
                 ret
 ;[]-------------------------------------------------------------------------[]
+;CF = 1: A = 0 canceled, A = 1 disk error
 CreateFile:     ld      hl,Buffer
                 ld      de,Buffer+1
                 ld      bc,0x1000-1
                 ld      (hl),0
                 ldir
-                call    CMOSWait
-                ; call    PrintCurrentTime
-                call    GetCurrentTime
-                push    hl
-                push    bc
                 ld      hl,CreateFileStr
                 ld      c,Dss.PChars
                 rst     0x10
@@ -196,9 +192,9 @@ CreateFile:     ld      hl,Buffer
                 ld      c,Dss.Creat_N
                 xor     a
                 rst     0x10
-                jr      c,.error1
+                jr      c,.error
                 ld      (FileHandler),a
-                ld      hl,(FileBlocks)
+                ld      hl,(FileBlocks)         ;512-byte blocks -> 4 KiB writes
                 and     a
                 rr      h
                 rr      l
@@ -208,72 +204,34 @@ CreateFile:     ld      hl,Buffer
                 rr      l
                 ld      b,h
                 ld      c,l
+                xor     a
+                ld      (KeyCount),a
+                call    TimerStart
+.loop:          push    bc
                 ld      hl,Buffer
                 ld      de,0x1000
-.loop:          push    hl
-                push    bc
-                push    de
                 ld      a,(FileHandler)
                 ld      c,Dss.Write
                 rst     0x10
-                jr      c,.error
-                ld      c,Dss.ScanKey
-                rst     0x10
-                jr      nz,.break
-                pop     de
+                jr      c,.errorpop
+                ld      a,0x1000/256
+                call    PollKey
+                jr      nz,.breakpop
                 pop     bc
-                pop     hl
                 dec     bc
                 ld      a,b
                 or      c
                 jr      nz,.loop
-                ld      hl,ElapsedTimeStr
-                ld      c,Dss.PChars
-                rst     0x10
-                call    GetCurrentTime                
-                pop     af
-                pop     de
-                ld      c,a
-                call    TimeMinus
-                push    hl
-                push    bc
-                call    PrintTime
-                pop     bc
-                pop     hl
-                xor     a
-                or      h               ;Слишком большое время
-                jr      nz,.tobig
-                ld      c,b
-                ld      b,l
-                push    bc
                 ld      hl,(FileBlocks)
-                ex      hl,de
-                and     a
-                rr      d
-                rr      e
-                ld      hl,0
-                pop     bc
-                call    div32           ;в DE - частное - Б/С
-                push    de
-                pop     hl
-                ld      bc,SpeedNumStr
-                call    PRNUM0
-                ld      hl,SpeedStr
-                ld      c,Dss.PChars
-                rst     0x10
-.tobig:         ld      hl,EnterStr
-                ld      c,Dss.PChars
-                rst     0x10
+                call    PrintResult
                 and     a
                 ret
-.break:         xor     a
-                jr      .exit
+.breakpop:      pop     bc
+                xor     a
+                scf
+                ret
+.errorpop:      pop     bc
 .error:         ld      a,1
-.exit:          pop     de
-                pop     bc
-                pop     hl
-.error1:        pop     bc
-                pop     hl
                 scf
                 ret
 
@@ -282,9 +240,16 @@ DeleteTestFile: ld      hl,TestFileName         ;delete temp file
                 xor     a
                 rst     0x10
                 ret
-SomeErrors:     ld      hl,CancelStr
-                and     a
-                jr      z,PrintError
+;A = 0 canceled, 1 disk error, 2 error message already printed
+SomeErrors:     and     a
+                jr      z,.cancel
+                dec     a
+                jr      nz,Exit
+                jr      DiskError
+.cancel:        ld      hl,CancelStr
+                jr      PrintError
+MemError:       ld      hl,MemErrorStr
+                jr      PrintError
 DiskError:      LD	HL, DiskErrorStr
 PrintError:     LD	C, Dss.PChars		; print text
 		RST	0x10
@@ -294,32 +259,135 @@ Exit:           ld      a,(FileHandler)
                 ld      c,Dss.Close
                 rst     0x10
 .next:          call    DeleteTestFile
+                call    TimerDeinit             ; the buffer page is released by DSS on exit
                 LD	BC, 0xFF00 + Dss.Exit
 		RST	0x10			; exit
 
-GetCurrentTime:
-                ld      c,Dss.SysTime
-                rst     0x10
-                ret
-;Print current time
-PrintCurrentTime:
-                ld      c,Dss.SysTime
-                rst     0x10
-PrintTime:      push    bc
-                ld	de,CMOSTime
-	        ld      a,h
-	        call	GetCMOS
-	        inc     de
-	        ld      a,l
-	        call	GetCMOS
-	        INC	DE
-                pop     af
-                call	GetCMOS
-                ld      hl,CMOSTime
+;[]-------------------------------------------------------------------------[]
+;Print "Elapsed: SSSSS.hh s  Speed: NNNNN KiB/s" for HL sectors (512 bytes)
+;transferred since TimerStart. Time comes from the CTC ticks unless the RTC
+;shows more than one extra second (ticks lost while a driver kept interrupts
+;disabled) or the CTC is not used - then the RTC seconds are used.
+PrintResult:    push    hl
+                call    TimerRead               ; HLDE = now
+                push    hl
+                push    de
+                call    RtcElapsed
+                ld      (RtcSecs),hl
+                pop     de
+                pop     hl
+                ld      bc,(StartTicks)
+                ex      de,hl
+                and     a
+                sbc     hl,bc
+                ex      de,hl                   ; DE = elapsed low word
+                ld      bc,(StartTicks+2)
+                sbc     hl,bc                   ; HL = elapsed high word
+                ld      (Elapsed),de
+                ld      (Elapsed+2),hl
+                xor     a
+                ld      (RtcUsed),a
+                ld      a,(TimerMode)
+                and     a
+                jr      nz,.rtc
+                ld      bc,(TicksPerSec)
+                call    div32                   ; DE = whole seconds counted by the CTC
+                inc     de                      ; RTC granularity is 1 s
+                ld      hl,(RtcSecs)
+                and     a
+                sbc     hl,de
+                jr      c,.ticks
+                jr      z,.ticks
+                ld      a,1
+                ld      (RtcUsed),a
+.rtc:           ld      hl,(RtcSecs)            ; elapsed = RTC seconds in ticks
+                ld      de,(TicksPerSec)
+                call    Mul16x16
+                ld      (Elapsed),de
+                ld      (Elapsed+2),hl
+.ticks:         ld      de,(Elapsed)
+                ld      hl,(Elapsed+2)
+                ld      a,h
+                or      l
+                or      d
+                or      e
+                jr      nz,.nonzero
+                inc     de                      ; never divide by zero
+                ld      (Elapsed),de
+.nonzero:       ld      bc,(TicksPerSec)
+                call    div32                   ; DE = seconds, HL = remainder
+                push    hl
+                ex      de,hl
+                ld      bc,ElapsedNumStr
+                call    PRNUM0
+                pop     hl
+                ld      de,100                  ; hundredths = remainder * 100 / TicksPerSec
+                call    Mul16x16
+                ld      bc,(TicksPerSec)
+                call    div32
+                ld      a,e
+                ld      de,ElapsedFracStr
+                call    Put2Digits
+                ld      hl,ElapsedStr
                 ld      c,Dss.PChars
                 rst     0x10
-                ret                
-GetCMOS:
+                pop     hl                      ; speed = KiB * TicksPerSec / elapsed
+                srl     h
+                rr      l
+                ld      de,(TicksPerSec)
+                call    Mul16x16                ; HLDE = KiB * TicksPerSec
+.norm:          ld      bc,(Elapsed+2)          ; div32 needs a 16-bit divisor:
+                ld      a,b                     ; halve both while elapsed > 0xFFFF
+                or      c
+                jr      z,.divide
+                srl     h
+                rr      l
+                rr      d
+                rr      e
+                srl     b
+                rr      c
+                ld      (Elapsed+2),bc
+                ld      bc,(Elapsed)
+                rr      b
+                rr      c
+                ld      (Elapsed),bc
+                jr      .norm
+.divide:        ld      bc,(Elapsed)
+                call    div32                   ; DE = KiB/s
+                ex      de,hl
+                ld      bc,SpeedNumStr
+                call    PRNUM0
+                ld      hl,SpeedStr
+                ld      c,Dss.PChars
+                rst     0x10
+                ld      a,(RtcUsed)
+                and     a
+                jr      z,.eol
+                ld      hl,RtcUsedStr
+                ld      c,Dss.PChars
+                rst     0x10
+.eol:           ld      hl,EnterStr
+                ld      c,Dss.PChars
+                rst     0x10
+                ret
+
+;Poll the keyboard once per 32 KiB transferred; A = bytes just transferred / 256.
+;ZF = 0: key pressed. Destroys HL, C. Cheap between polls (it runs inside the
+;timed loops).
+PollKey:        ld      hl,KeyCount
+                add     a,(hl)
+                cp      128
+                jr      nc,.scan
+                ld      (hl),a
+                xor     a
+                ret
+.scan:          ld      (hl),0
+                ld      c,Dss.ScanKey
+                rst     0x10
+                ret
+
+;Write A (0..99) as two decimal digits at (DE); DE advances by 2
+Put2Digits:
 	        ex	de,hl
 	        ld	bc,#2F0A
 	        inc	b
@@ -333,111 +401,6 @@ GetCMOS:
 	        inc     hl
 	        ex	de,hl
 	        ret
-;Time = Time1 - Time2
-;HL,B - Time1 (H - hours, L - minutes, B - seconds)
-;DE,C - Time2 (D - hours, E - minutes, C - seconds)
-;Result: HL,B
-TimeMinus:      ld      a,b
-                and     a
-                sub     c
-                ld      b,a
-                jr      nc,.next
-                neg
-                ld      b,a
-                ld      a,60
-                sub     b
-                ld      b,a
-                inc     l
-                dec     l
-                jr      z,.zero
-                dec     l
-                jr      .next
-.zero:          ld      l,59
-                dec     h
-.next:          ld      a,l
-                and     a
-                sub     e
-                ld      l,a
-                jr      nc,.next1
-                neg
-                ld      l,a
-                ld      a,60
-                sub     l
-                inc     h
-                dec     h
-                jr      nz,.nozero
-                ld      h,24
-.nozero:        dec     h
-.next1:         ld      a,h
-                and     a
-                sub     d
-                ld      h,a
-                ret     nc
-                ld      h,23
-                ret
-
-;Convert Time (hours, minutes, seconds) to seconds
-;HL,B - Time1 (H - hours, L - minutes, B - seconds)
-;Result - HL,DE 32bit result
-TimeInSeconds:  push    bc
-                push    hl
-                ld      a,h
-                ld      bc,3600
-                ld      hl,0
-                and     a
-                ld      d,a
-                ld      e,a
-                jr      z,.next
-.loop:          add     hl,bc
-                jr      nc,.loop1
-                inc     d
-.loop1:         dec     a
-                jr      nz,.loop
-.next:          ex      (sp),hl
-                ld      a,l
-                ld      l,e
-                ld      h,e
-                ld      bc,60
-                and     a
-                jr      z,.next2
-.loop2:         add     hl,bc
-                dec     a
-                jr      nz,.loop2
-.next2:         ex      hl,de
-                pop     hl
-                and     a
-                add     hl,de
-                jr      nc,.next3
-                inc     b
-.next3:         ld      e,b
-                ld      d,0
-                pop     bc
-                ld      c,b
-                ld      b,d
-                and     a
-                add     hl,bc
-                jr      nc,.next4
-                inc     de
-.next4:         ex      hl,de
-                ret
-
-;Ожидание до начала секунды
-CMOSWait:       di
-                ld      bc,CMOS_AWR        ;далее не портится
-                ld      a,0
-                out     (c),a
-                ld      a,0FFh
-                in      a,(0xBD)
-                ld      e,a
-.loop0:         ld      bc,CMOS_AWR        ;далее не портится
-                ld      a,0
-                out     (c),A
-                ld      a,0xff
-                in      a,(0xBD)        ;отфильтруем тик (на тот случай если попали в его конец)
-                cp      e            ;
-                jr      z,.loop0        ;
-                ld      e,a            ;4, а вот от сюда и начинается отсчёт тактов
-                ret
 
 ;Parse Arguments in Command line
 ParseArguments:
@@ -482,12 +445,22 @@ ParseArguments:
                 jr      z,.help
                 cp      "S"
                 jr      z,.size
+                cp      "F"
+                jr      z,.fileonly
+                cp      "B"
+                jr      z,.biosonly
 .skip:          ld      a,(hl)
                 cp      c
                 jr      z,.loop
                 and     a
                 ret     z
                 inc     hl
+                jr      .skip
+.fileonly:      ld      a,TEST_FILE
+                ld      (TestMask),a
+                jr      .skip
+.biosonly:      ld      a,TEST_BIOS
+                ld      (TestMask),a
                 jr      .skip
 .help:          ld      hl,HelpStr
                 ld      c,Dss.PChars
@@ -536,7 +509,7 @@ ParseArguments:
                 call    CheckParam
                 ld      hl,0x4000
                 jr      c,.notfound
-.found:         ld      (FileBlocks),hl                
+.found:         ld      (FileBlocks),hl
                 pop     hl
                 ld      de,FileSizeStr.size
                 ld      bc,4
@@ -551,7 +524,7 @@ ParseArguments:
                 ld      c,Dss.PChars
                 rst     0x10
                 pop     hl
-                pop     de                
+                pop     de
                 pop     bc
                 pop     de
                 jp      .skip
@@ -575,16 +548,18 @@ CheckParam:     ld      b,0x20
                 inc     de
                 jr      .loop
 .end:           scf
-                ret        
+                ret
 HelpStr:        db      "Disk perfomance testing utility.", 0x0D, 0x0A
                 db      "With no command line parameters, the utility will perform a file-system based", 0x0D, 0x0A
-                db      "performance test with a test file size of 2MB on disk from which utility was", 0x0D, 0x0A
-                db      "started.", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "performance test (write + read) with a test file size of 2MB and a raw BIOS", 0x0D, 0x0A
+                db      "sector read test on disk from which utility was started.", 0x0D, 0x0A, 0x0D, 0x0A
                 db      "Usage: X:       specify test disk letter", 0x0D, 0x0A
                 db      "       /H, /?   help page", 0x0D, 0x0A
                 db      "       /S       specify the test file size (512K, 1M, 2M, 4M, 8M).", 0x0D, 0x0A
-                db      "                Default test file size is 2M", 0x0D, 0x0A, 0x0D, 0x0A
-                db      "Example: DISKTEST.EXE C: /S 4M", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
+                db      "                Default test file size is 2M", 0x0D, 0x0A
+                db      "       /F       file system test only", 0x0D, 0x0A
+                db      "       /B       BIOS sector read test only (IDE drives)", 0x0D, 0x0A, 0x0D, 0x0A
+                db      "Example: DISKTEST.EXE C: /S 4M /B", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 FileSizeStr:    db      "Test file size: "
 .size:          db      "2M  ", 0x00
 S512KStr:       db      "512K", 0x00
@@ -595,18 +570,21 @@ S8MStr:         db      "8M", 0x00,0x00
 UnknownSizeStr: db      "The value of the size parameter is not correct, please read the help (start app", 0x0D, 0x0A
                 db      "with /? argument).", 0x0D, 0x0A, 0x00
 CopyrightStr:	db	0x0D, 0x0A
-		db	"DiskTest, ver 0.6 (Alpha)", 0x0D, 0x0A
+		db	"DiskTest, ver 0.7 (Alpha)", 0x0D, 0x0A
 		db	"(C) 2021, Mikhaltchenkov Dmitry aka Hard/WCG, Rostov-on-Don.", 0x0D, 0x0A, 0x0D, 0x0A, 0x00
 IncorDosStr:	db	"Incorrect DOS version, need DOS 1.00 or high.", 0x0D, 0x0A, 0x00
-CreateFileStr:  db      "Creating test file ...            ", 0x00
+MemErrorStr:    db      "Not enough memory for the 16 KiB buffer.", 0x0D, 0x0A, 0x00
+CreateFileStr:  db      "Test: File write, block  4KB ... ", 0x00
 DiskInfo:       db      "Testing disk: "
 .letter:        db      "A:", 0x0D, 0x0A, 0x00
 EnterStr:       db      0x0D, 0x0A, 0x00
-ElapsedTimeStr: db      "Elapsed: ", 0x00
+ElapsedStr:     db      "Elapsed: "
+ElapsedNumStr:  db      "00000."
+ElapsedFracStr: db      "00 s  ", 0x00
 CancelStr:      db      "Canceled", 0x0D, 0x0A, 0x00
 SpeedStr:       db      "Speed: "
 SpeedNumStr:    db      "00000 KiB/s", 0x00
-CMOSTime:       db      "00:00:00 ", 0x00
+RtcUsedStr:     db      " (RTC)", 0x00
 
 TestSize512BStr:
                 db      "512B"
@@ -619,7 +597,7 @@ TestSize8KBStr:
 TestSize16KBStr:
                 db      "16KB"
 ConsistentReadStr:
-                db      "Test: Consistent reading "
+                db      "Test: File read, block "
 .size:          db      "512B ... ", 0x00
 DiskErrorStr:   db      "PANIC: Disk error!", 0x0D, 0x0A, 0x00
 TestFileName:   db      "DISKTEST.$$$",0
@@ -627,10 +605,17 @@ FileBlocks:     dw      0x1000                  ;file lenght in 512 bytes blocks
 FileHandler:    db      0                       ;file handler
 WorkDriveNumber:
                 db      0xFF
+TestMask:       db      TEST_FILE | TEST_BIOS   ;/F, /B
+KeyCount:       db      0                       ;PollKey: bytes/256 since the last poll
+Elapsed:        dw      0, 0                    ;PrintResult scratch
+RtcSecs:        dw      0
+RtcUsed:        db      0                       ;1: result timed by the RTC (ticks were lost)
                 ;Division routines
                 include "muldiv.asm"
-                include "prnum.asm"                
+                include "prnum.asm"
+                include "timer.asm"
+                include "biosread.asm"
 
-Buffer:         equ     $
 EXEend:
+                ASSERT  EXEend <= IM2_DEFAULT   ; code must stay below the IM2 jump/table/stack
                 savebin	"DISKTEST.EXE",EXEhead,EXEend-EXEhead

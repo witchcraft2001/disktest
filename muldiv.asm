@@ -48,3 +48,35 @@ div512:		ld c,e		;младшие 8 бит остатка
 ; 		djnz .mul16_1
 ; 		ld b,a
 ; 		ret
+;-------------------------------------------------------------------------------
+;HL=X, DE=Y -> HL:DE = X*Y (HL=high word, DE=low word, matches div32's dividend)
+;Horner's method on Y's bits, MSB first: P = P*2 + bit*X. Destroys AF,BC.
+Mul16x16:       ld      (MulX),hl
+                ld      b,d
+                ld      c,e                     ;BC = Y, shifted left each iteration
+                ld      hl,0
+                ld      de,0                    ;DE:HL = P (accumulator), DE=high,HL=low
+                ld      a,16
+.loop:          sla     c
+                rl      b                       ;Y <<= 1; CF = bit now being processed
+                jr      c,.bit1
+.bit0:          add     hl,hl
+                ex      de,hl
+                adc     hl,hl
+                ex      de,hl                   ;P *= 2
+                jr      .next
+.bit1:          add     hl,hl
+                ex      de,hl
+                adc     hl,hl
+                ex      de,hl                   ;P *= 2
+                push    de
+                ld      de,(MulX)
+                add     hl,de
+                pop     de
+                jr      nc,.next
+                inc     de
+.next:          dec     a
+                jr      nz,.loop
+                ex      de,hl                   ;P was DE=high,HL=low -> HL=high,DE=low
+                ret
+MulX:           dw      0
