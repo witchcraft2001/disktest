@@ -5,7 +5,7 @@
 ; The IM2 vector table and both handlers live in window 2 (our page), so the
 ; ticks keep counting while DSS (window 0 = DSS/driver page) or BIOS
 ; (window 0 = ROM) code runs. Every vector other than the CTC one lands on
-; IM2_DEFAULT, which jumps to 0x0038 - the DSS IM1 handler (keyboard scan,
+; IM2_DEFAULT, which jumps to DefaultHandler; it disables CACHE around 0x0038 (keyboard scan,
 ; cursor) keeps working unchanged.
 ; The tick rate is calibrated against the RTC seconds, so it does not matter
 ; whether the CTC clock follows the CPU turbo mode or not.
@@ -19,7 +19,7 @@
 ;[]-------------------------------------------------------------------------[]
 IM2_TABLE       EQU     0xBC00                  ; 257 bytes, I = 0xBC
 IM2_FILL        EQU     0xBB
-IM2_DEFAULT     EQU     IM2_FILL*256+IM2_FILL   ; 0xBBBB: JP 0x0038
+IM2_DEFAULT     EQU     IM2_FILL*256+IM2_FILL   ; 0xBBBB: JP DefaultHandler
 CTC_VECTOR      EQU     0x80                    ; D7..D3 of the CTC interrupt vector
 CTC_CH3_VECTOR  EQU     CTC_VECTOR + 3*2        ; channel number in D2..D1
 CTC_CTRL_INIT   EQU     %10100111               ; INT, timer, /256, TC follows, reset
@@ -36,9 +36,9 @@ TimerInit:      di
                 ld      bc,256
                 ld      (hl),IM2_FILL
                 ldir
-                ld      a,0xC3                  ; JP 0x0038
+                ld      a,0xC3                  ; JP DefaultHandler
                 ld      (IM2_DEFAULT),a
-                ld      hl,0x0038
+                ld      hl,DefaultHandler
                 ld      (IM2_DEFAULT+1),hl
                 ld      hl,TickHandler
                 ld      (IM2_TABLE+CTC_CH3_VECTOR),hl
@@ -99,9 +99,13 @@ TimerCalibrate: ld      hl,CalibratingStr
                 ld      c,Dss.PChars
                 rst     0x10
                 call    CMOSWait
+                jr      c,.unavailable
                 call    TimerRead
                 push    de
                 call    CMOSWait
+                pop     de
+                jr      c,.unavailable
+                push    de
                 call    TimerRead
                 pop     bc
                 ex      de,hl
@@ -116,6 +120,12 @@ TimerCalibrate: ld      hl,CalibratingStr
                 ld      bc,TimerHzNumStr
                 call    PRNUM0
                 ld      hl,TimerHzStr
+                ld      c,Dss.PChars
+                rst     0x10
+                ret
+.unavailable:   ld      a,2
+                ld      (TimerMode),a
+                ld      hl,NoTimeStr
                 ld      c,Dss.PChars
                 rst     0x10
                 ret
@@ -137,7 +147,14 @@ TimerStart:     push    hl
                 push    ix
                 ld      a,(TimerMode)
                 and     a
-                call    nz,CMOSWait
+                jr      z,.ready
+                cp      2
+                jr      z,.ready
+                call    CMOSWait
+                jr      nc,.ready
+                ld      a,2
+                ld      (TimerMode),a
+.ready:
                 call    RtcSeconds
                 ld      (StartRtc),de
                 ld      (StartRtc+2),hl
@@ -168,7 +185,22 @@ TimerRead:      ld      a,(TimerMode)
 ;HLDE = RTC seconds since midnight; destroys BC, IX
 RtcSeconds:     ld      c,Dss.SysTime
                 rst     0x10
+                jr      c,.invalid
+                ld      a,h
+                cp      24
+                jr      nc,.invalid
+                ld      a,l
+                cp      60
+                jr      nc,.invalid
+                ld      a,b
+                cp      60
+                jr      nc,.invalid
                 jp      TimeToSeconds
+.invalid:       ld      a,2
+                ld      (TimerMode),a
+                ld      hl,0
+                ld      de,0
+                ret
 
 ;HL = whole RTC seconds since TimerStart (midnight wrap handled, capped at
 ;0xFFFF); destroys BC, DE, IX
@@ -232,9 +264,20 @@ TimeToSeconds:  push    bc
 ;Ожидание до начала секунды (interrupts stay enabled between the port accesses)
 CMOSWait:       call    .read
                 ld      e,a
+                ld      hl,0
+                ld      d,32                    ; bounded even with stopped RTC/CTC
 .loop:          call    .read
                 cp      e
-                jr      z,.loop
+                jr      nz,.changed
+                dec     hl
+                ld      a,h
+                or      l
+                jr      nz,.loop
+                dec     d
+                jr      nz,.loop
+                scf
+                ret
+.changed:       or      a
                 ret
 .read:          di
                 ld      bc,CMOS_AWR

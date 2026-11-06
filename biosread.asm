@@ -17,6 +17,8 @@ BiosTestPrepare:
                 and     0xF0
                 cp      0x80                    ; IDE device class
                 jr      nz,.unsupported
+                ld      (PartSize),de
+                ld      (PartSize+2),hl
                 push    hl
                 ld      hl,(FileBlocks)
                 ld      (BiosSectors),hl
@@ -56,13 +58,13 @@ DssDrvCall:     push    iy
 
 ;HL = block size label (4 chars), E = sectors per BIOS call (1..32)
 ;CF = 1: A = 0 canceled, A = 2 BIOS error (already printed)
-TestBiosRead:   push    de
+BiosReadPass:    call    SeriesLoad
+                push    de
                 ld      de,BiosReadStr.size
                 ld      bc,4
                 ldir
                 ld      hl,BiosReadStr
-                ld      c,Dss.PChars
-                rst     0x10
+                call    SeriesTitle
                 pop     de
                 ld      a,e
                 ld      (BiosBlock),a
@@ -74,16 +76,28 @@ TestBiosRead:   push    de
                 ld      (Remaining),hl
                 xor     a
                 ld      (KeyCount),a
-                inc     a
-                ld      (SumPending),a
-                call    TimerStart
+                ld      (VerifyFile),a
+                call    VerifyInit
+                ld      a,(MapMode)
+                or      a
+                jr      z,.raw
+                ld      (VerifyFile),a
+                ld      hl,(FileBlocks)
+                ld      (Remaining),hl
+                call    MapBegin
+.raw:           call    TimerStart
 .loop:          ld      hl,(Remaining)
                 ld      a,h
                 or      l
                 jr      z,.done
                 ld      a,(BiosBlock)
                 ld      b,a
-                ld      a,h                     ; B = min(block, remaining)
+                ld      a,(MapMode)
+                or      a
+                jr      z,.rawCount
+                call    MapChunk
+                ld      hl,(Remaining)
+.rawCount:      ld      a,h                     ; B = min(block, remaining)
                 or      a
                 jr      nz,.count
                 ld      a,l
@@ -107,7 +121,9 @@ TestBiosRead:   push    de
                 pop     iy
                 jr      c,.bioserr
                 pop     bc
-                call    TakeResultSum           ; first command only
+                ld      a,b
+                call    VerifyBlock
+                ret     c
                 ld      hl,(CurLBA)             ; next sector, computed here so it does
                 ld      e,b                     ; not depend on the BIOS exit path
                 ld      d,0
@@ -117,15 +133,21 @@ TestBiosRead:   push    de
                 ld      hl,(CurLBA+2)
                 inc     hl
                 ld      (CurLBA+2),hl
-.lbaok:         ld      a,b                     ; sectors * 2 = bytes / 256
+.lbaok:         ld      a,(MapMode)
+                or      a
+                call    nz,MapAdvance
+                ld      a,b                     ; sectors * 2 = bytes / 256
                 add     a,a
                 call    PollKey
                 jr      nz,.break
                 jr      .loop
-.done:          ld      hl,(BiosSectors)
-                call    PrintResult
-                and     a
-                ret
+.done:          ld      a,(MapMode)
+                or      a
+                ld      hl,(BiosSectors)
+                jp      z,SeriesFinish
+                call    MapEnd
+                ld      hl,(FileBlocks)
+                jp      SeriesFinish
 .break:         xor     a
                 scf
                 ret
@@ -169,3 +191,5 @@ BiosSectors:    dw      0                       ;sectors per test pass
 CurLBA:         dw      0, 0
 Remaining:      dw      0
 BiosBlock:      db      0                       ;sectors per BIOS call
+
+PartSize:       dd 0

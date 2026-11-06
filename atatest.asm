@@ -7,8 +7,7 @@
 ; READ SECTORS raises DRQ once per sector, READ MULTIPLE once per block of
 ; AtaMultiN sectors (SET MULTIPLE MODE), which is the difference being measured.
 ; The transfer loop runs from the program page (DRAM) while the BIOS one runs
-; from ROM, so in turbo the absolute numbers are above the BIOS test's; compare
-; SECTORS against MULTI within this stand, not against the BIOS test.
+; from ROM. The identical core can also run from SRAM for /C.
 ; The device control register (nIEN/SRST) is left alone, like the BIOS does.
 ;[]-------------------------------------------------------------------------[]
 ATA_SECTORS     equ     0
@@ -27,6 +26,9 @@ AtaTests:       call    AtaIdentify
                 ld      a,(AtaMultiMax)
                 and     a
                 ret     z                       ; READ MULTIPLE not supported
+                ld      a,(AtaMultiOld+1)
+                and     1
+                jr      z,.nomulti
                 ld      a,(AtaMultiN)
                 call    AtaSetMultiple
                 jr      c,.nomulti
@@ -34,9 +36,16 @@ AtaTests:       call    AtaIdentify
                 call    AtaRunSet
                 push    af
                 call    AtaRestoreMultiple
+                jr      c,.restoreFailed
                 pop     af
                 ret
-.nomulti:       ld      hl,AtaSetMultiFailStr
+.restoreFailed: pop     af
+                ld      a,2
+                scf
+                ret
+.nomulti:       call    AtaRestoreMultiple
+                ret     c
+                ld      hl,AtaSetMultiFailStr
                 ld      c,Dss.PChars
                 rst     0x10
                 and     a
@@ -72,7 +81,8 @@ AtaSizeTable:   dw      TestSize512BStr
 
 ;HL = block size label (4 chars), E = sectors per command (1..32), C = mode
 ;CF = 1: A = 0 canceled, A = 2 ATA error (already printed)
-TestAtaRead:    ld      a,e
+AtaReadPass:    call    SeriesLoad
+                ld      a,e
                 ld      (BiosBlock),a
                 ld      a,c
                 ld      (AtaMode),a
@@ -86,8 +96,7 @@ TestAtaRead:    ld      a,e
                 pop     hl
                 ld      bc,-ATA_TITLE_LEN
                 add     hl,bc
-                ld      c,Dss.PChars
-                rst     0x10
+                call    SeriesTitle
                 ld      hl,(PartStart)
                 ld      (CurLBA),hl
                 ld      hl,(PartStart+2)
@@ -96,8 +105,8 @@ TestAtaRead:    ld      a,e
                 ld      (Remaining),hl
                 xor     a
                 ld      (KeyCount),a
-                inc     a
-                ld      (SumPending),a
+                ld      (VerifyFile),a
+                call    VerifyInit
                 call    AtaSelect
                 jp      c,.ataerr
                 call    TimerStart
@@ -128,32 +137,11 @@ TestAtaRead:    ld      a,e
                 ld      a,IdeCmd.ReadSectors
                 jr      z,.cmd
                 ld      a,IdeCmd.ReadMultiple
-.cmd:           call    AtaCommand              ; B = count
+.cmd:           call    AtaTransfer
                 jr      c,.ataerr
-                ld      hl,Buffer
-.drq:           call    AtaWaitDrq
-                jr      c,.ataerr
-                ld      b,1                     ; READ SECTORS: one sector per DRQ
-                ld      a,(AtaMode)
-                and     a
-                jr      z,.block
-                ld      a,(AtaMultiN)           ; READ MULTIPLE: a block per DRQ
-                ld      b,a
-                ld      a,(AtaLeft)
-                cp      b
-                jr      nc,.block
-                ld      b,a                     ; last, shorter block
-.block:         ld      a,(AtaLeft)
-                sub     b
-                ld      (AtaLeft),a
-.sector:        push    bc
-                call    AtaReadSector           ; HL += 512, no status polling
-                pop     bc
-                djnz    .sector
-                ld      a,(AtaLeft)
-                and     a
-                jr      nz,.drq
-                call    TakeResultSum           ; first command only
+                ld      a,(AtaCmdCount)
+                call    VerifyBlock
+                ret     c
                 ld      a,(AtaCmdCount)
                 ld      b,a
                 ld      hl,(CurLBA)             ; next sector
@@ -171,13 +159,12 @@ TestAtaRead:    ld      a,e
                 jr      nz,.break
                 jp      .loop
 .done:          ld      hl,(BiosSectors)
-                call    PrintResult
-                and     a
-                ret
+                jp      SeriesFinish
 .break:         xor     a
                 scf
                 ret
-.ataerr:        ld      a,(AtaStatus)
+.ataerr:        call    AtaRecover
+                ld      a,(AtaStatus)
                 ld      de,AtaErrorStr.status
                 call    PutHex2
                 ld      a,(AtaError)
@@ -262,10 +249,11 @@ AtaIdentify:    call    AtaSelect
                 rst     0x10
                 and     a
                 ret
-.error:         ld      hl,AtaIdentifyFailStr
+.error:         call    AtaRecover
+                ld      hl,AtaIdentifyFailStr
                 ld      c,Dss.PChars
                 rst     0x10
-                jp      TestAtaRead.ataerr
+                jp      AtaReadPass.ataerr
 
 ;SET MULTIPLE MODE, A = sectors per block. CF = 1: rejected (ERR/abort)
 AtaSetMultiple: push    af
@@ -280,129 +268,106 @@ AtaSetMultiple: push    af
                 out     (c),a
                 jp      AtaWaitDone
 
-;Put the setting found by IDENTIFY back, if there was a valid one
+ ; Restore valid word 59, including 0100h (MULTIPLE disabled), then verify.
 AtaRestoreMultiple:
                 ld      hl,(AtaMultiOld)
                 bit     0,h
                 ret     z
                 ld      a,l
-                and     a
-                ret     z
-                jp      AtaSetMultiple
-
-;Select channel and device from PhysDrive (0x80..: bit0 slave, bit1 secondary)
-;and wait until it is ready
-AtaSelect:      ld      a,(PhysDrive)
-                ld      e,a
-                ld      a,Ide.Primary
-                bit     1,e
-                jr      z,.chan
-                ld      a,Ide.Secondary
-.chan:          out     (Ide.ChanelPort),a
-                ld      a,Ide.DevHeadLBA
-                bit     0,e
-                jr      z,.dev
-                or      0x10
-.dev:           ld      (AtaDevHead),a
-                ld      bc,Ide.WriteDevHead
-                out     (c),a
-                jp      AtaWaitReady
-
-;A = command, B = sector count; LBA taken from CurLBA. CF = 1 on error
-AtaCommand:     ld      (AtaCmd),a
-                ld      a,b
-                ld      (AtaCount),a
-                call    AtaWaitReady
-                ret     c
-                ld      a,(AtaCount)
-                ld      bc,Ide.WriteCounter
-                out     (c),a
-                ld      hl,(CurLBA)
-                ld      bc,Ide.WriteSector
-                out     (c),l                   ; LBA 0..7
-                inc     c                       ; Ide.WriteCylLow
-                out     (c),h                   ; LBA 8..15
-                ld      hl,(CurLBA+2)
-                inc     c                       ; Ide.WriteCylHigh
-                out     (c),l                   ; LBA 16..23
-                ld      a,h
-                and     0x0F
-                ld      hl,AtaDevHead
-                or      (hl)                    ; device | LBA 24..27
-                ld      bc,Ide.WriteDevHead
-                out     (c),a
-                ld      a,(AtaCmd)
+                call    AtaSetMultiple
+                jr      c,.failed
+                ld      a,IdeCmd.Identify
                 ld      bc,Ide.WriteCommand
                 out     (c),a
-                and     a
-                ret
-
-;Poll Status until (S & D) == E; while BSY is set the other bits are not valid.
-;With ERR in the mask D an error ends the wait. CF = 1 on that error or on a
-;timeout, AtaStatus/AtaError filled. HL preserved; AF, BC, DE destroyed.
-;Before a command only RDY counts: ERR may be left over from the previous
-;command (DSS's, for example) and is cleared by the next one - the BIOS does
-;not look at it there either.
-AtaWaitReady:   ld      de,256*(IdeSt.BSY+IdeSt.RDY)+IdeSt.RDY
-                jr      AtaWait
-;After a non-data command: RDY, or ERR if the device rejected it
-AtaWaitDone:    ld      de,256*(IdeSt.BSY+IdeSt.RDY+IdeSt.ERR)+IdeSt.RDY
-                jr      AtaWait
-;the device needs up to 400 ns after the last word of a block to drop DRQ /
-;raise BSY: a dummy status read first, so a stale DRQ is never taken for the
-;next block
-AtaWaitDrq:     ld      bc,Ide.ReadStatus
-                in      a,(c)
-                ld      de,256*(IdeSt.BSY+IdeSt.DRQ+IdeSt.ERR)+IdeSt.DRQ
-AtaWait:        push    hl
-                ld      b,8                     ; 8 * 65536 polls
-.outer:         push    bc
-                ld      hl,0
-                ld      bc,Ide.ReadStatus
-.loop:          in      a,(c)
-                bit     7,a                     ; BSY
-                jr      nz,.next
-                and     d
-                cp      e
-                jr      z,.ok
-                rra                             ; ERR, only left in A when in the mask
-                jr      c,.error
-.next:          dec     hl
+                call    AtaWaitDrq
+                jr      c,.failed
+                ld      hl,Buffer
+                call    AtaReadSector
+                ld      hl,(Buffer+118)
+                ld      de,(AtaMultiOld)
                 ld      a,h
-                or      l
-                jr      nz,.loop
-                pop     bc
-                djnz    .outer
-                ld      bc,Ide.ReadStatus       ; timeout
-                in      a,(c)
-                jr      .fail
-.error:         pop     bc
-                ld      bc,Ide.ReadStatus       ; the full status for the report
-                in      a,(c)
-.fail:          ld      (AtaStatus),a
-                ld      bc,Ide.ReadError
-                in      a,(c)
-                ld      (AtaError),a
-                pop     hl
+                and     1
+                cp      1
+                jr      nz,.failed
+                ld      a,l
+                cp      e
+                ret     z
+.failed:        call    AtaRecover
+                ld      hl,AtaRestoreFailStr
+                ld      c,Dss.PChars
+                rst     0x10
+                ld      a,2
                 scf
                 ret
-.ok:            pop     bc
-                pop     hl
-                and     a
+
+AtaSelect:      push    af
+                ld      a,(UseCache)
+                or      a
+                jr      nz,.cache
+                pop     af
+                jp      Dram.Select
+.cache:         di
+                in      a,(0xFB)
+                ld      a,1
+                ld      (CacheActive),a
+                pop     af
+                ei
+                call    Sram.Select
+                di
+                push    af
+                in      a,(0x7B)
+                xor     a
+                ld      (CacheActive),a
+                pop     af
+                ei
+                ret
+AtaCommand:     jp      Dram.Command
+AtaWaitReady:   jp      Dram.WaitReady
+AtaWaitDone:    jp      Dram.WaitDone
+AtaWaitDrq:     jp      Dram.WaitDrq
+AtaReadSector:  jp      Dram.ReadSector
+
+AtaTransfer:    push    af
+                xor     a
+                ld      (AtaTransferError),a
+                ld      a,(UseCache)
+                or      a
+                jr      nz,.cache
+                pop     af
+                jp      Dram.Transfer
+.cache:         di
+                in      a,(0xFB)
+                ld      a,1
+                ld      (CacheActive),a
+                pop     af
+                ei
+                call    Sram.Transfer
+                di
+                push    af
+                in      a,(0x7B)
+                xor     a
+                ld      (CacheActive),a
+                pop     af
+                ei
                 ret
 
-;Read one 512-byte sector from the data port into (HL), HL += 512.
-;The BIOS loop: B counts 256 -> 0 twice, the port's high byte is ignored
-AtaReadSector:  ld      bc,Ide.ReadData
-.loop1:         DUP     16
-                ini
-                EDUP
-                jp      nz,.loop1
-.loop2:         DUP     16
-                ini
-                EDUP
-                jp      nz,.loop2
-                ret
+                MODULE Dram
+                include "ata_core.asm"
+                ENDMODULE
+SramImage:
+                DISP 0x0200
+                MODULE Sram
+                include "ata_core.asm"
+SramEnd:
+                ENDMODULE
+                ENT
+SramSize        equ Sram.SramEnd-0x0200
+                ASSERT SramSize < 0x3E00
+
+AtaRestoreFailStr: db "MULTIPLE restore/verify failed; device state uncertain",13,10,0
+AtaWaitSecond:  db 0
+AtaWaitSeconds: db 0
+AtaTransferError: db 0
 
 AtaReadStr:     db      "Test: ATA read,  block "
 .size:          db      "512B ... ", 0x00
@@ -437,3 +402,38 @@ AtaMultiMax:    db      0                       ;IDENTIFY word 47 low byte
 AtaMultiN:      db      0                       ;block used by the MULTI tests
 AtaMultiOld:    dw      0                       ;IDENTIFY word 59
 AtaLba:         db      0                       ;IDENTIFY word 49 bit 9 (nonzero: LBA)
+
+; Finish a failed read before any DSS call. ERR/DF without BSY/DRQ is idle.
+; An unresponsive controller cannot safely be returned to DOS: restore SRAM,
+; stop our timer, and signal a fatal error with a red border until reset.
+AtaRecover:     ld      a,(AtaStatus)
+                push    af
+                ld      a,(AtaError)
+                push    af
+                ld      b,0                     ; no command has >256 sectors
+.loop:          push    bc
+                call    Dram.WaitNotBusy
+                ld      bc,Ide.ReadStatus
+                in      a,(c)
+                pop     bc
+                bit     7,a
+                jr      nz,.fatal
+                bit     3,a
+                jr      z,.idle
+                push    bc
+                ld      hl,Buffer
+                call    AtaReadSector
+                pop     bc
+                djnz    .loop
+.fatal:         call    CacheDeinit
+                call    TimerDeinit
+                di
+                ld      a,2
+                out     (0xFE),a
+.halt:          halt
+                jr      .halt
+.idle:          pop     af
+                ld      (AtaError),a
+                pop     af
+                ld      (AtaStatus),a
+                ret

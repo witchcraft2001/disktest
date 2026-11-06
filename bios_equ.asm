@@ -38,6 +38,7 @@ Ide.DevHeadLBA          EQU     0xE0            ; master, LBA; | 0x10 = slave
 IdeSt.BSY               EQU     0x80
 IdeSt.RDY               EQU     0x40
 IdeSt.DRQ               EQU     0x08
+IdeSt.DF                EQU     0x20
 IdeSt.ERR               EQU     0x01
 IdeCmd.ReadSectors      EQU     0x20            ; with retry
 IdeCmd.ReadMultiple     EQU     0xC4
@@ -49,3 +50,6 @@ CTC_CH0         EQU     0x10
 CTC_CH1         EQU     0x11
 CTC_CH2         EQU     0x12
 CTC_CH3         EQU     0x13
+
+; SP2000.inc SLOT1: 4000h..7FFFh. SLOT0/WIN0 is a different port, 82h.
+WIN1_PORT       EQU     0xA2
